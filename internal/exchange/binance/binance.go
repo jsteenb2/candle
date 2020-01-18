@@ -30,9 +30,13 @@ func New() (*Client, error) {
 		log.Panic(err)
 	}
 
+	limit := rate.Every(time.Second)
+	limiter := rate.NewLimiter(rateLimit, 2)
+	limiter.SetLimit(limit)
+
 	c := &Client{
 		httpClient: client,
-		limiter:    rate.NewLimiter(rateLimit, 2),
+		limiter:    limiter,
 	}
 	if err := c.initSymbols(); err != nil {
 		return nil, err
@@ -111,7 +115,7 @@ func (c *Client) getHistorical(ctx context.Context, pair exchange.Pair, start, e
 			break
 		}
 		log.Printf("%s retryable err: %v", c.Exchange(), err)
-		time.Sleep(time.Second)
+		time.Sleep(time.Duration(i+1) * time.Second)
 	}
 	return f, err
 }

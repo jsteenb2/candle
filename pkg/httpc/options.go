@@ -141,7 +141,7 @@ func defaultHTTPClient(scheme string, insecure bool) *http.Client {
 		MaxIdleConns:          100,
 		IdleConnTimeout:       90 * time.Second,
 		TLSHandshakeTimeout:   10 * time.Second,
-		ExpectContinueTimeout: 1 * time.Second,
+		ExpectContinueTimeout: 5 * time.Second,
 	}
 	if scheme == "https" && insecure {
 		tr.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}

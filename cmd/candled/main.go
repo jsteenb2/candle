@@ -2,22 +2,22 @@ package main
 
 import (
 	"context"
-	"errors"
 	"flag"
 	"fmt"
 	"log"
+	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"path"
-	"strconv"
 	"sync"
 	"time"
-
-	"github.com/jsteenb2/candle/internal/exchange/binance"
 
 	"github.com/etcd-io/bbolt"
 	"github.com/influxdata/influxdb-client-go"
 	"github.com/jsteenb2/candle/internal/exchange"
+	"github.com/jsteenb2/candle/internal/exchange/binance"
+	"github.com/jsteenb2/candle/internal/exchange/coinbase"
 )
 
 func main() {
@@ -67,28 +67,35 @@ func main() {
 	}
 	defer db.Close()
 
-	lastSeenRepo, err := newLastSeenRepo(db)
+	lastSeenRepo, err := exchange.NewLastSeenRepo(db)
 	if err != nil {
 		log.Panic(err)
 	}
 
-	influxC, err := influxdb.New(*addr, *token)
+	hc := &http.Client{
+		Transport: &http.Transport{
+			Proxy: http.ProxyFromEnvironment,
+			DialContext: (&net.Dialer{
+				Timeout:   30 * time.Second,
+				KeepAlive: 30 * time.Second,
+				DualStack: true,
+			}).DialContext,
+			MaxIdleConns:          100,
+			IdleConnTimeout:       90 * time.Second,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ExpectContinueTimeout: 5 * time.Second,
+		},
+		Timeout: time.Minute,
+	}
+
+	influxC, err := influxdb.New(*addr, *token, influxdb.WithHTTPClient(hc))
 	if err != nil {
 		log.Panic(err)
 	}
 
-	maxTrys := 15
-	for i := 1; i <= maxTrys; i++ {
-		err := influxC.Ping(context.Background())
-		if err == nil {
-			break
-		}
-		log.Println(i, "failed to ping influxdb")
-
-		if i == maxTrys {
-			log.Panic(fmt.Errorf("failed to ping influxdb: %w", err))
-		}
-		time.Sleep(time.Duration(i+1) * time.Second)
+	iw := exchange.NewInfluxWriter(influxC, *bkt, *org)
+	if err := iw.Ping(context.Background(), 15); err != nil {
+		log.Panic(fmt.Errorf("failed to ping influxdb: %w", err))
 	}
 
 	binanceC, err := binance.New()
@@ -96,24 +103,18 @@ func main() {
 		log.Panic(err)
 	}
 
-	//coinbaseC, err := coinbase.New()
-	//if err != nil {
-	//	log.Panic(err)
-	//}
-
-	//krakenC, err := kraken.New()
-	//if err != nil {
-	//	log.Panic(err)
-	//}
+	coinbaseC, err := coinbase.New()
+	if err != nil {
+		log.Panic(err)
+	}
 
 	exchanges := []exchange.Exchange{
 		binanceC,
-		//coinbaseC,
-		//krakenC,
+		coinbaseC,
 	}
 
 	exchangeRunner := exchange.Runner{
-		InfluxC:   influxC,
+		InfluxC:   iw,
 		Repo:      lastSeenRepo,
 		Exchanges: exchanges,
 	}
@@ -182,8 +183,6 @@ func main() {
 		close(merged)
 	}()
 
-	iw := newInfluxWriter(influxC, *bkt, *org)
-
 	done := make(chan os.Signal, 2)
 	signal.Notify(done, os.Interrupt, os.Kill)
 
@@ -203,74 +202,4 @@ func main() {
 			log.Printf("write successful: exchange=%s market=%s cur=%s batch_size=%d", m.exchangeMetrics.Exchange, m.pair.Market(), m.pair.Currency(), len(m.exchangeMetrics.Metrics))
 		}
 	}
-}
-
-type influxWriter struct {
-	client *influxdb.Client
-	bkt    string
-	org    string
-}
-
-func newInfluxWriter(influxC *influxdb.Client, bkt, org string) *influxWriter {
-	return &influxWriter{
-		client: influxC,
-		bkt:    bkt,
-		org:    org,
-	}
-}
-
-func (w *influxWriter) Write(ctx context.Context, metrics []influxdb.Metric) error {
-	if len(metrics) == 0 {
-		return errors.New("no metrics provided")
-	}
-
-	_, err := w.client.Write(ctx, w.bkt, w.org, metrics...)
-	return err
-}
-
-type lastSeenRepo struct {
-	db *bbolt.DB
-}
-
-func newLastSeenRepo(db *bbolt.DB) (*lastSeenRepo, error) {
-	l := &lastSeenRepo{db: db}
-
-	if err := l.init(); err != nil {
-		return nil, err
-	}
-	return l, nil
-}
-
-func (l *lastSeenRepo) GetLast(key string) time.Time {
-	var last time.Time
-	l.db.View(func(tx *bbolt.Tx) error {
-		val := tx.
-			Bucket(l.bucket()).
-			Get([]byte(key))
-		i, err := strconv.ParseInt(string(val), 10, 64)
-		if err == nil {
-			last = time.Unix(0, i)
-		}
-		return err
-	})
-	return last
-}
-
-func (l *lastSeenRepo) PutLast(key string, val time.Time) error {
-	return l.db.Update(func(tx *bbolt.Tx) error {
-		return tx.
-			Bucket(l.bucket()).
-			Put([]byte(key), []byte(strconv.FormatInt(val.UnixNano(), 10)))
-	})
-}
-
-func (l *lastSeenRepo) bucket() []byte {
-	return []byte("last_seen")
-}
-
-func (l *lastSeenRepo) init() error {
-	return l.db.Update(func(tx *bbolt.Tx) error {
-		_, err := tx.CreateBucketIfNotExists(l.bucket())
-		return err
-	})
 }

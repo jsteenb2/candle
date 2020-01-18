@@ -3,7 +3,6 @@ package exchange
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log"
 	"time"
 
@@ -51,10 +50,14 @@ type (
 		Historical(ctx context.Context, pair Pair, start, end time.Time) ([]Entry, error)
 		ValidPair(pair Pair) bool
 	}
+
+	InfluxC interface {
+		FindWindow(ctx context.Context, opt FindOpts) (time.Time, time.Time, error)
+	}
 )
 
 type Runner struct {
-	InfluxC   *influxdb.Client
+	InfluxC   InfluxC
 	Repo      Repository
 	Exchanges []Exchange
 }
@@ -108,8 +111,6 @@ func (r *Runner) history(ctx context.Context, ex Exchange, p Pair, start time.Ti
 		}()
 		defer close(outStream)
 
-		startns := time.Since(start.Add(-2 * time.Minute))
-
 		track := struct {
 			end     time.Time
 			counter int
@@ -123,38 +124,14 @@ func (r *Runner) history(ctx context.Context, ex Exchange, p Pair, start time.Ti
 				return
 			}
 
-			endns := time.Since(track.next)
-			query := fmt.Sprintf(queryFmt, startns, endns, ex.Exchange(), p.Market(), p.Currency())
-
-			res, err := r.InfluxC.QueryCSV(ctx, query, "rg")
+			st, end, err := r.InfluxC.FindWindow(ctx, FindOpts{
+				Exchange: ex.Exchange(),
+				Pair:     p,
+				Start:    start.Add(-2 * time.Minute),
+				End:      track.next,
+			})
 			if err != nil {
 				return err
-			}
-
-			var st, end, cur time.Time
-			for res.Next() {
-				if len(res.Row) < 4 {
-					continue
-				}
-
-				cur, err = time.Parse(time.RFC3339, res.Row[3])
-				if err != nil {
-					continue
-				}
-
-				if end.IsZero() {
-					end = cur
-				}
-				if end.UnixNano()-cur.UnixNano() > 5*int64(time.Hour)-2*int64(time.Minute) {
-					break
-				}
-				st = cur
-			}
-			res.Close()
-
-			if i == 0 && st.IsZero() && end.IsZero() {
-				end = time.Now()
-				st = end.Add(-5*time.Hour + 2*time.Minute)
 			}
 
 			if st.IsZero() || track.end.Equal(end) && track.counter > 0 || track.st.Equal(st) {
@@ -166,8 +143,19 @@ func (r *Runner) history(ctx context.Context, ex Exchange, p Pair, start time.Ti
 				return err
 			}
 
+			track.counter++
+			track.st = st
+			track.end = end
+			if st.Before(track.next) {
+				track.next = st.Add(-time.Minute)
+			} else if end.Before(track.next) {
+				track.next = st.Add(-time.Minute)
+			} else {
+				track.next = track.next.Add(-5*time.Hour + 2*time.Minute)
+			}
+
 			if len(entries) == 0 {
-				return
+				continue
 			}
 
 			metrics := make([]influxdb.Metric, len(entries))
@@ -181,21 +169,8 @@ func (r *Runner) history(ctx context.Context, ex Exchange, p Pair, start time.Ti
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
-			case outStream <- struct {
-				Exchange string
-				Metrics  []influxdb.Metric
-			}{Exchange: ex.Exchange(), Metrics: metrics}:
-			}
-
-			track.counter++
-			track.st = st
-			track.end = end
-			if st.Before(track.next) {
-				track.next = st.Add(-time.Minute)
-			} else if end.Before(track.next) {
-				track.next = st.Add(-time.Minute)
-			} else {
-				track.next = track.next.Add(-5*time.Hour + 2*time.Minute)
+			case outStream <- Metrics{Exchange: ex.Exchange(), Metrics: metrics}:
+				track.counter = 0
 			}
 		}
 	}(ctx, ex, p, start)

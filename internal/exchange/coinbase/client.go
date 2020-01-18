@@ -33,9 +33,13 @@ func New() (*Client, error) {
 		log.Panic(err)
 	}
 
+	limit := rate.Every(time.Second)
+	limiter := rate.NewLimiter(rateLimit, 3)
+	limiter.SetLimit(limit)
+
 	return &Client{
 		httpClient: client,
-		limiter:    rate.NewLimiter(rateLimit, 1),
+		limiter:    limiter,
 	}, nil
 }
 
