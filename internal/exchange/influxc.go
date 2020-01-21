@@ -46,6 +46,10 @@ func (w *InfluxClient) Ping(ctx context.Context, maxTrys int) error {
 	return nil
 }
 
+func (w *InfluxClient) Setup(ctx context.Context) (*influxdb.SetupResult, error) {
+	return w.client.Setup(ctx, w.bkt, w.org, 0)
+}
+
 func (w *InfluxClient) Write(ctx context.Context, metrics []influxdb.Metric) error {
 	if len(metrics) == 0 {
 		return errors.New("no metrics provided")
@@ -64,13 +68,25 @@ type FindOpts struct {
 	Interval  time.Duration
 }
 
-func (w *InfluxClient) FindWindow(ctx context.Context, opt FindOpts) (time.Time, time.Time, error) {
+type Window struct {
+	Start, End time.Time
+}
+
+func (w Window) String() string {
+	startDur := time.Since(w.Start).Round(time.Minute)
+	endDur := time.Since(w.End).Round(time.Minute)
+	return fmt.Sprintf("start=%s end=%s", startDur, endDur)
+}
+
+const day = 24 * time.Hour
+
+func (w *InfluxClient) FindWindow(ctx context.Context, opt FindOpts) ([]Window, error) {
 	if err := w.readLimiter.Wait(ctx); err != nil {
-		return time.Time{}, time.Time{}, err
+		return nil, err
 	}
 
 	if opt.Threshold == 0 {
-		opt.Threshold = 5*time.Hour - 2*time.Minute
+		opt.Threshold = 5 * time.Hour
 	}
 	if opt.Interval == 0 {
 		opt.Interval = time.Minute
@@ -78,9 +94,6 @@ func (w *InfluxClient) FindWindow(ctx context.Context, opt FindOpts) (time.Time,
 
 	st := opt.Start
 	end := opt.End
-	if opt.End.UnixNano()-opt.Start.UnixNano() > 24*int64(time.Hour) {
-		st = opt.End.Add(-24*time.Hour - 2*time.Minute)
-	}
 
 	const queryFmt = `
 from(bucket: "%s")
@@ -92,9 +105,9 @@ from(bucket: "%s")
 	)
 	|> aggregateWindow(every: %s, fn: count)
 	|> filter(fn: (r) => r._value == 0)
-	|> sort(columns: ["_time"], desc: true)
 	|> keep(columns: ["_time"])
-	|> limit(n: 500)
+	|> unique(column: "_time")
+	|> sort(columns: ["_time"], desc: true)
 `
 	query := fmt.Sprintf(queryFmt,
 		w.bkt,
@@ -108,36 +121,79 @@ from(bucket: "%s")
 
 	res, err := w.client.QueryCSV(ctx, query, w.org)
 	if err != nil {
-		return time.Time{}, time.Time{}, err
+		return nil, err
 	}
 	defer res.Close()
 
-	var (
-		cur  time.Time
-		seen bool
-	)
+	var windows []Window
+	curWindow := Window{Start: time.Now()}
 	for res.Next() {
 		if len(res.Row) < 4 {
 			continue
 		}
 
-		cur, err = time.Parse(time.RFC3339, res.Row[3])
+		cur, err := time.Parse(time.RFC3339, res.Row[3])
 		if err != nil {
 			continue
 		}
 
-		if !seen {
-			end = cur
-			seen = true
+		if !curWindow.End.IsZero() && timeDiff(cur, curWindow.End) > opt.Threshold {
+			windows = append(windows, curWindow)
+			curWindow = Window{
+				Start: cur,
+				End:   cur,
+			}
+			continue
 		}
-		if end.UnixNano()-cur.UnixNano() > int64(opt.Threshold) {
-			break
+
+		if cur.Before(curWindow.Start) {
+			curWindow.Start = cur
 		}
-		st = cur
-	}
-	if cur.IsZero() {
-		return st, time.Time{}, nil
+		if cur.After(curWindow.End) {
+			curWindow.End = cur
+		}
 	}
 
-	return st, end, nil
+	if len(windows) == 0 {
+		if !curWindow.End.IsZero() {
+			return []Window{validWindow(curWindow, opt.Interval)}, nil
+		}
+		return emptyRecordWindows(st, end, opt.Interval), nil
+	}
+	if curWindow != windows[len(windows)-1] {
+		windows = append(windows, validWindow(curWindow, opt.Interval))
+	}
+
+	return windows, nil
+}
+
+func validWindow(w Window, interval time.Duration) Window {
+	if w.Start.Equal(w.End) || timeDiff(w.Start, w.End) < interval {
+		return Window{
+			Start: w.End.Add(-interval),
+			End:   w.End,
+		}
+	}
+	return w
+}
+
+func emptyRecordWindows(start, end time.Time, interval time.Duration) []Window {
+	//if timeDiff(start, end) <= interval {
+	//	return []Window{{Start: start.Add(-interval), End: end}}
+	//}
+
+	var windows []Window
+	for end.After(start) {
+		st := end.Add(-interval)
+		windows = append(windows, Window{
+			Start: st,
+			End:   end,
+		})
+		end = st
+	}
+	return windows
+}
+
+func timeDiff(start, end time.Time) time.Duration {
+	return time.Duration(end.UnixNano() - start.UnixNano())
 }

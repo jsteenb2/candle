@@ -27,15 +27,13 @@ type Client struct {
 var _ exchange.Exchange = (*Client)(nil)
 
 func New() (*Client, error) {
-	const rateLimit = 3
 	client, err := httpc.New(httpc.WithAddr("https://api.pro.coinbase.com"))
 	if err != nil {
 		log.Panic(err)
 	}
 
-	limit := rate.Every(time.Second)
-	limiter := rate.NewLimiter(rateLimit, 3)
-	limiter.SetLimit(limit)
+	limiter := rate.NewLimiter(3, 3)
+	limiter.SetLimit(rate.Every(time.Second))
 
 	return &Client{
 		httpClient: client,

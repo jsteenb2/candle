@@ -141,7 +141,7 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	start := time.Now().Add(-7 * 24 * time.Hour)
+	start := time.Now().Add(-180 * 24 * time.Hour)
 
 	streams := make([]exchangeStream, 0, len(pairs)*len(exchanges))
 	for _, p := range pairs {
@@ -160,8 +160,8 @@ func main() {
 	}
 
 	type mergedStream struct {
-		pair            exchange.Pair
-		exchangeMetrics exchange.Metrics
+		pair exchange.Pair
+		exM  exchange.Metrics
 	}
 	merged := make(chan mergedStream)
 	wg := new(sync.WaitGroup)
@@ -171,8 +171,8 @@ func main() {
 			defer wg.Done()
 			for m := range ex.stream {
 				merged <- mergedStream{
-					pair:            ex.pair,
-					exchangeMetrics: m,
+					pair: ex.pair,
+					exM:  m,
 				}
 			}
 		}(st)
@@ -195,11 +195,19 @@ func main() {
 			if !ok {
 				return
 			}
-			if err := iw.Write(context.Background(), m.exchangeMetrics.Metrics); err != nil {
+			if err := iw.Write(context.Background(), m.exM.Metrics); err != nil {
 				log.Printf("failed to write to influxdb for market=%s cur=%s: err=%s", m.pair.Market(), m.pair.Currency(), err)
 				continue
 			}
-			log.Printf("write successful: exchange=%s market=%s cur=%s batch_size=%d", m.exchangeMetrics.Exchange, m.pair.Market(), m.pair.Currency(), len(m.exchangeMetrics.Metrics))
+			log.Printf("write successful: exchange=%s market=%s cur=%s batch_size=%d start=%q stop=%q spans=%s",
+				m.exM.Exchange,
+				m.pair.Market(),
+				m.pair.Currency(),
+				len(m.exM.Metrics),
+				m.exM.Start.Format(time.Stamp),
+				m.exM.End.Format(time.Stamp),
+				time.Duration(m.exM.End.UnixNano()-m.exM.Start.UnixNano()),
+			)
 		}
 	}
 }

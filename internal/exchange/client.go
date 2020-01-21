@@ -52,7 +52,7 @@ type (
 	}
 
 	InfluxC interface {
-		FindWindow(ctx context.Context, opt FindOpts) (time.Time, time.Time, error)
+		FindWindow(ctx context.Context, opt FindOpts) ([]Window, error)
 	}
 )
 
@@ -62,24 +62,10 @@ type Runner struct {
 	Exchanges []Exchange
 }
 
-const queryFmt = `
-from(bucket: "bucket1")
-	|> range(start: -%dns, stop: -%dns)
-	|> filter(fn : (r) => 
-		r.exchange == %q and 
-		r._measurement == %q and 
-		r.cur == %q
-	)
-	|> aggregateWindow(every: 1m, fn: count)
-	|> filter(fn: (r) => r._value == 0)  
-	|> sort(columns: ["_time"], desc: true)
-	|> keep(columns: ["_time"])
-	|> limit(n: 500)
-`
-
 type Metrics struct {
-	Exchange string
-	Metrics  []influxdb.Metric
+	Start, End time.Time
+	Exchange   string
+	Metrics    []influxdb.Metric
 }
 
 func (r *Runner) BackFill(ctx context.Context, pair Pair, start time.Time) (<-chan (<-chan Metrics), error) {
@@ -94,15 +80,14 @@ func (r *Runner) BackFill(ctx context.Context, pair Pair, start time.Time) (<-ch
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
-		case streams <- r.history(ctx, ex, pair, start):
+		case streams <- r.runHistorical(ctx, ex, pair, start):
 		}
 	}
 	return streams, nil
 }
 
-func (r *Runner) history(ctx context.Context, ex Exchange, p Pair, start time.Time) <-chan Metrics {
+func (r *Runner) runHistorical(ctx context.Context, ex Exchange, p Pair, startTime time.Time) <-chan Metrics {
 	outStream := make(chan Metrics)
-
 	go func(ctx context.Context, ex Exchange, p Pair, start time.Time) (e error) {
 		defer func() {
 			if e != nil && !errors.Is(e, context.Canceled) {
@@ -112,67 +97,66 @@ func (r *Runner) history(ctx context.Context, ex Exchange, p Pair, start time.Ti
 		defer close(outStream)
 
 		track := struct {
-			end     time.Time
-			counter int
-			st      time.Time
-			next    time.Time
+			next time.Time
 		}{
 			next: time.Now(),
 		}
-		for i := 0; ; i++ {
-			if track.next.Before(start) {
+		for {
+			if track.next.Before(start) || track.next.Equal(start) {
 				return
 			}
 
-			st, end, err := r.InfluxC.FindWindow(ctx, FindOpts{
-				Exchange: ex.Exchange(),
-				Pair:     p,
-				Start:    start.Add(-2 * time.Minute),
-				End:      track.next,
-			})
-			if err != nil {
-				return err
+			st := track.next.Add(-day)
+			for _, w := range emptyRecordWindows(st, track.next, 4*time.Hour+30*time.Minute) {
+				if err := r.history(ctx, outStream, ex, p, w.Start, w.End); err != nil {
+					return err
+				}
 			}
 
-			if st.IsZero() || track.end.Equal(end) && track.counter > 0 || track.st.Equal(st) {
-				return nil
-			}
-
-			entries, err := ex.Historical(ctx, p, st.Add(-time.Minute), end)
-			if err != nil {
-				return err
-			}
-
-			track.counter++
-			track.st = st
-			track.end = end
-			if st.Before(track.next) {
-				track.next = st.Add(-time.Minute)
-			} else if end.Before(track.next) {
-				track.next = st.Add(-time.Minute)
-			} else {
-				track.next = track.next.Add(-5*time.Hour + 2*time.Minute)
-			}
-
-			if len(entries) == 0 {
-				continue
-			}
-
-			metrics := make([]influxdb.Metric, len(entries))
-			for i, e := range entries {
-				metrics[i] = influxdb.NewRowMetric(e.Fields(), p.Market(), map[string]string{
-					"exchange": ex.Exchange(),
-					"cur":      p.Currency(),
-				}, time.Unix(0, e.Time))
-			}
-
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case outStream <- Metrics{Exchange: ex.Exchange(), Metrics: metrics}:
-				track.counter = 0
-			}
+			track.next = st
 		}
-	}(ctx, ex, p, start)
+	}(ctx, ex, p, startTime)
 	return outStream
+}
+
+func (r *Runner) history(ctx context.Context, outStream chan Metrics, ex Exchange, p Pair, start, end time.Time) error {
+	entries, err := ex.Historical(ctx, p, start.Add(-time.Minute), end)
+	if err != nil {
+		return err
+	}
+
+	if len(entries) == 0 {
+		return nil
+	}
+
+	metrics := make([]influxdb.Metric, len(entries))
+	var (
+		st     = time.Now()
+		endRes time.Time
+	)
+	for i, e := range entries {
+		t := time.Unix(0, e.Time)
+		if st.After(t) {
+			st = t
+		}
+		if endRes.Before(t) {
+			endRes = t
+		}
+		metrics[i] = influxdb.NewRowMetric(e.Fields(), p.Market(), map[string]string{
+			"exchange": ex.Exchange(),
+			"cur":      p.Currency(),
+		}, t)
+	}
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case outStream <- Metrics{
+		End:      endRes,
+		Start:    st,
+		Exchange: ex.Exchange(),
+		Metrics:  metrics,
+	}:
+		return nil
+	}
 }

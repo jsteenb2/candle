@@ -10,10 +10,9 @@ import (
 	"strconv"
 	"time"
 
-	"golang.org/x/time/rate"
-
 	"github.com/jsteenb2/candle/internal/exchange"
 	"github.com/jsteenb2/candle/pkg/httpc"
+	"golang.org/x/time/rate"
 )
 
 type Client struct {
@@ -24,14 +23,13 @@ type Client struct {
 }
 
 func New() (*Client, error) {
-	const rateLimit = 5
 	client, err := httpc.New(httpc.WithAddr("https://api.binance.com"))
 	if err != nil {
 		log.Panic(err)
 	}
 
-	limit := rate.Every(time.Second)
-	limiter := rate.NewLimiter(rateLimit, 2)
+	limit := rate.Every(500 * time.Millisecond)
+	limiter := rate.NewLimiter(5, 5)
 	limiter.SetLimit(limit)
 
 	c := &Client{
@@ -81,14 +79,13 @@ func (c *Client) getHistorical(ctx context.Context, pair exchange.Pair, start, e
 		params := [][2]string{
 			{"symbol", symbol(pair)},
 			{"interval", "1m"},
+			{"limit", "1000"},
 		}
 		if !start.IsZero() {
 			params = append(params,
 				[2]string{"startTime", tsStart},
 				[2]string{"endTime", tsEnd},
 			)
-		} else {
-			params = append(params, [2]string{"limit", "1000"})
 		}
 
 		var retry bool
