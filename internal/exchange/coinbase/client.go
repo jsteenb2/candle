@@ -21,6 +21,7 @@ const (
 
 type Client struct {
 	httpClient *httpc.Client
+	wsURL      string
 	limiter    *rate.Limiter
 }
 
@@ -37,6 +38,7 @@ func New() (*Client, error) {
 
 	return &Client{
 		httpClient: client,
+		wsURL:      "wss://ws-feed.pro.coinbase.com",
 		limiter:    limiter,
 	}, nil
 }
@@ -47,6 +49,21 @@ func (c *Client) Exchange() string {
 
 func (c *Client) ValidPair(pair exchange.Pair) bool {
 	return exchange.Market(pair.Market()) != exchange.Monero
+}
+
+func (c *Client) Subscribe(ctx context.Context, pairs ...exchange.Pair) (<-chan exchange.PairEntryMsg, error) {
+	out := make(chan exchange.PairEntryMsg)
+	close(out)
+	// coinbase does nto support a candle ws feed
+	return out, nil
+}
+
+func pairsToProductIDs(pairs []exchange.Pair) []string {
+	var out []string
+	for _, p := range pairs {
+		out = append(out, productID(p))
+	}
+	return out
 }
 
 func (c *Client) Historical(ctx context.Context, pair exchange.Pair, start, end time.Time) ([]exchange.Entry, error) {

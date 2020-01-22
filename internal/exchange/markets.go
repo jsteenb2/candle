@@ -31,6 +31,23 @@ type Pair struct {
 	currency Currency
 }
 
+func NewPair(market, cur string) Pair {
+	market = strings.ToUpper(market)
+	if market == "BTC" {
+		market = string(Bitcoin)
+	}
+
+	cur = strings.ToUpper(cur)
+	if cur == "USDT" {
+		cur = "USD"
+	}
+
+	return Pair{
+		market:   Market(market),
+		currency: Currency(cur),
+	}
+}
+
 func (p Pair) Market() string {
 	return strings.ToUpper(string(p.market))
 }

@@ -50,6 +50,13 @@ func (c *Client) ValidPair(pair exchange.Pair) bool {
 	return c.knownSymbols[symbol(pair)]
 }
 
+func (c *Client) Subscribe(ctx context.Context, pairs ...exchange.Pair) (<-chan exchange.PairEntryMsg, error) {
+	stream := make(chan exchange.PairEntryMsg)
+	defer close(stream)
+
+	return stream, nil
+}
+
 func (c *Client) Historical(ctx context.Context, pair exchange.Pair, start, end time.Time) ([]exchange.Entry, error) {
 	if err := c.limiter.Wait(ctx); err != nil {
 		return nil, err

@@ -21,6 +21,7 @@ import (
 	"github.com/jsteenb2/candle/internal/exchange"
 	"github.com/jsteenb2/candle/internal/exchange/binance"
 	"github.com/jsteenb2/candle/internal/exchange/coinbase"
+	"github.com/jsteenb2/candle/internal/exchange/gemini"
 )
 
 func main() {
@@ -124,9 +125,15 @@ func main() {
 		log.Panic(err)
 	}
 
+	geminiC, err := gemini.New()
+	if err != nil {
+		log.Panic(err)
+	}
+
 	exchanges := []exchange.Exchange{
 		binanceC,
 		coinbaseC,
+		geminiC,
 	}
 
 	exchangeRunner := exchange.Runner{
@@ -149,83 +156,33 @@ func main() {
 		exchange.XRPUSD,
 		exchange.XRPEUR,
 	}
-	type exchangeStream struct {
-		pair   exchange.Pair
-		stream <-chan exchange.Metrics
-	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	start := time.Now().Add(-180 * 24 * time.Hour)
-
-	streams := make([]exchangeStream, 0, len(pairs)*len(exchanges))
-	for _, p := range pairs {
-		readStreams, err := exchangeRunner.BackFill(ctx, p, start)
-		if err != nil {
-			log.Println("client err: ", err)
-			continue
-		}
-
-		for s := range readStreams {
-			streams = append(streams, exchangeStream{
-				pair:   p,
-				stream: s,
-			})
-		}
-	}
-
-	type mergedStream struct {
-		pair exchange.Pair
-		exM  exchange.Metrics
-	}
-	merged := make(chan mergedStream)
 	wg := new(sync.WaitGroup)
-	for _, st := range streams {
-		wg.Add(1)
-		go func(ex exchangeStream) {
-			defer wg.Done()
-			for m := range ex.stream {
-				merged <- mergedStream{
-					pair: ex.pair,
-					exM:  m,
-				}
-			}
-		}(st)
-	}
-
+	wg.Add(1)
 	go func() {
-		wg.Wait()
-		close(merged)
+		defer wg.Done()
+		if err := exchangeRunner.Live(ctx, pairs); err != nil {
+			log.Println("live err: ", err)
+		}
 	}()
 
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		err := exchangeRunner.BackFill(ctx, pairs, time.Now().Add(-180*24*time.Hour))
+		if err != nil {
+			log.Println("backfill err: ", err)
+		}
+	}()
 	done := make(chan os.Signal, 2)
 	signal.Notify(done, os.Interrupt, os.Kill)
 
-	for {
-		select {
-		case <-done:
-			cancel()
-			return
-		case m, ok := <-merged:
-			if !ok {
-				return
-			}
-			if err := iw.Write(context.Background(), m.exM.Metrics); err != nil {
-				log.Printf("failed to write to influxdb for market=%s cur=%s: err=%s", m.pair.Market(), m.pair.Currency(), err)
-				continue
-			}
-			log.Printf("write successful: exchange=%s market=%s cur=%s batch_size=%d start=%q stop=%q spans=%s",
-				m.exM.Exchange,
-				m.pair.Market(),
-				m.pair.Currency(),
-				len(m.exM.Metrics),
-				m.exM.Start.Format(time.Stamp),
-				m.exM.End.Format(time.Stamp),
-				time.Duration(m.exM.End.UnixNano()-m.exM.Start.UnixNano()),
-			)
-		}
-	}
+	<-done
+	cancel()
+	wg.Wait()
 }
 
 func getToken() string {

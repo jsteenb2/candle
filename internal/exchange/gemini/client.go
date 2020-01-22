@@ -11,12 +11,16 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gobwas/ws"
+	"github.com/gobwas/ws/wsutil"
 	"github.com/jsteenb2/candle/internal/exchange"
 	"github.com/jsteenb2/candle/pkg/httpc"
 )
 
 type Client struct {
 	httpClient *httpc.Client
+	wsURL      string
+	symbols    map[string]bool
 }
 
 var _ exchange.Exchange = (*Client)(nil)
@@ -27,20 +31,19 @@ func New() (*Client, error) {
 		log.Panic(err)
 	}
 
-	return &Client{httpClient: client}, nil
+	c := &Client{
+		httpClient: client,
+		wsURL:      "wss://api.gemini.com/v2/marketdata",
+	}
+	if err := c.initSymbols(); err != nil {
+		return nil, err
+	}
+
+	return c, nil
 }
 
 func (c *Client) Exchange() string {
 	return "gemini"
-}
-
-func (c *Client) Interval(pair exchange.Pair) time.Duration {
-	// interval is high b/c gemini gives us a boat load of data
-	// and there is no way to paginate it
-	if exchange.Currency(pair.Currency()) == exchange.USD {
-		return 30 * time.Minute
-	}
-	return 20 * time.Minute
 }
 
 func (c *Client) ValidPair(pair exchange.Pair) bool {
@@ -51,28 +54,82 @@ func (c *Client) ValidPair(pair exchange.Pair) bool {
 		return true
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	var symbols []string
-	err := c.httpClient.
-		Get("/v1/symbols").
-		DecodeJSON(&symbols).
-		Do(ctx)
-	if err != nil {
-		log.Println("failed to get gemini symbols: ", err)
-		// fail to true
-		return true
-	}
-
 	pairSymb := strings.ToLower(pair.Market() + pair.Currency())
+	return c.symbols[pairSymb]
+}
 
-	for _, s := range symbols {
-		if s == pairSymb {
-			return true
-		}
+func (c *Client) Subscribe(ctx context.Context, pairs ...exchange.Pair) (<-chan exchange.PairEntryMsg, error) {
+	conn, _, _, err := ws.Dial(ctx, c.wsURL)
+	if err != nil {
+		return nil, err
 	}
-	return false
+
+	out := make(chan exchange.PairEntryMsg)
+	go func(symbols []string) {
+		defer close(out)
+		defer conn.Close()
+
+		type foo struct {
+			Name    string   `json:"name"`
+			Symbols []string `json:"symbols"`
+		}
+
+		subscription := struct {
+			Type         string `json:"type"`
+			Subscription []foo  `json:"subscriptions"`
+		}{
+			Type: "subscribe",
+			Subscription: []foo{
+				{
+					Name:    "candles_1m",
+					Symbols: symbols,
+				},
+			},
+		}
+		b, err := json.Marshal(subscription)
+		if err != nil {
+			log.Println(err)
+			return
+		}
+
+		if err := wsutil.WriteClientText(conn, b); err != nil {
+			log.Println(err)
+			return
+		}
+
+		for {
+			b, _, err := wsutil.ReadServerData(conn)
+			if err != nil {
+				log.Println(err)
+				return
+			}
+
+			var resp struct {
+				Type    string   `json:"type"`
+				Symbol  string   `json:"symbol"`
+				Changes []*entry `json:"changes"`
+			}
+			if err := json.Unmarshal(b, &resp); err != nil {
+				log.Println(err)
+				continue
+			}
+
+			if resp.Type == "heartbeat" {
+				continue
+			}
+
+			pair := symToPair(resp.Symbol)
+			for _, e := range resp.Changes {
+				select {
+				case <-ctx.Done():
+					return
+				case out <- exchange.PairEntryMsg{Pair: pair, Entry: exchange.Entry(*e)}:
+				}
+			}
+		}
+	}(pairsToSymbols(c.symbols, pairs))
+
+	return out, nil
 }
 
 func (c *Client) Historical(ctx context.Context, pair exchange.Pair, start, end time.Time) ([]exchange.Entry, error) {
@@ -126,6 +183,28 @@ func (c *Client) getHistorical(ctx context.Context, pair exchange.Pair) ([]*entr
 	return f, err
 }
 
+func (c *Client) initSymbols() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var symbols []string
+	err := c.httpClient.
+		Get("/v1/symbols").
+		DecodeJSON(&symbols).
+		Do(ctx)
+	if err != nil {
+		return err
+	}
+
+	m := make(map[string]bool, len(symbols))
+	for _, s := range symbols {
+		m[s] = true
+	}
+	c.symbols = m
+
+	return nil
+}
+
 func candleID(p exchange.Pair) string {
 	market := p.Market()
 	switch exchange.Market(p.Market()) {
@@ -134,6 +213,22 @@ func candleID(p exchange.Pair) string {
 	}
 
 	return strings.ToLower(market + p.Currency())
+}
+
+func pairsToSymbols(available map[string]bool, pairs []exchange.Pair) []string {
+	symbols := make([]string, 0, len(pairs))
+	for _, p := range pairs {
+		sym := candleID(p)
+		if !available[sym] {
+			continue
+		}
+		symbols = append(symbols, sym)
+	}
+	return symbols
+}
+
+func symToPair(symbol string) exchange.Pair {
+	return exchange.NewPair(symbol[:3], symbol[3:])
 }
 
 type entry exchange.Entry
