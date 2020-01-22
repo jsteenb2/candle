@@ -1,15 +1,18 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"flag"
 	"fmt"
+	"io/ioutil"
 	"log"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"path"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -24,17 +27,16 @@ func main() {
 	ballast := make([]byte, 10<<30)
 	var _ = ballast
 
-	addr := flag.String("addr", "http://localhost:9999", "address for influxdb")
-	token := flag.String("token", os.Getenv("INFLUX_TOKEN"), "token for influxdb")
-	bkt := flag.String("bucket", "bucket1", "influxdb bucket target")
-	org := flag.String("org", os.Getenv("INFLUX_ORG"), "influxdb org target")
+	addr := flag.String("addr", envWithDefault("INFLUX_ADDR", "http://localhost:9999"), "address for influxdb")
+	token := flag.String("token", "", "token for influxdb")
+	bkt := flag.String("bucket", envWithDefault("INFLUX_BUCKET", "bucket1"), "influxdb bucket target")
+	user := flag.String("user", envWithDefault("INFLUX_USER", ""), "influxdb bucket target")
+	password := flag.String("password", envWithDefault("INFLUX_PASSWORD", ""), "influxdb bucket target")
+	org := flag.String("org", envWithDefault("INFLUX_ORG", "rg"), "influxdb org target")
 	dotPath := flag.String("dotpath", os.ExpandEnv("$HOME/.candled"), "path to boltdb")
 	flag.Parse()
 
 	if *addr == "" {
-		log.Panic("no token provided")
-	}
-	if *token == "" {
 		log.Panic("no token provided")
 	}
 	if *bkt == "" {
@@ -45,6 +47,12 @@ func main() {
 	}
 	if *dotPath == "" {
 		log.Panic("no dot path provided")
+	}
+
+	if *token == "" {
+		if t := getToken(); t != "" {
+			*token = t
+		}
 	}
 
 	{
@@ -88,14 +96,22 @@ func main() {
 		Timeout: time.Minute,
 	}
 
-	influxC, err := influxdb.New(*addr, *token, influxdb.WithHTTPClient(hc))
-	if err != nil {
-		log.Panic(err)
+	influxOpts := []influxdb.Option{influxdb.WithHTTPClient(hc)}
+	if *user != "" && *password != "" {
+		influxOpts = append(influxOpts, influxdb.WithUserAndPass(*user, *password))
 	}
 
-	iw := exchange.NewInfluxWriter(influxC, *bkt, *org)
+	iw := exchange.NewInfluxWriter(mustNewInfluxC(*addr, *token, influxOpts...), *bkt, *org)
 	if err := iw.Ping(context.Background(), 15); err != nil {
 		log.Panic(fmt.Errorf("failed to ping influxdb: %w", err))
+	}
+	if *token == "" {
+		res, err := iw.Setup(context.Background())
+		if err != nil {
+			log.Panic(err)
+		}
+		mustWriteToken(*dotPath, res.Auth.Token)
+		iw = exchange.NewInfluxWriter(mustNewInfluxC(*addr, res.Auth.Token, influxOpts...), *bkt, *org)
 	}
 
 	binanceC, err := binance.New()
@@ -210,4 +226,47 @@ func main() {
 			)
 		}
 	}
+}
+
+func getToken() string {
+	if t := os.Getenv("INFLUX_TOKEN"); t != "" {
+		return t
+	}
+
+	home := os.Getenv("$HOME")
+	if home == "" {
+		home = "/root"
+	}
+
+	b, err := ioutil.ReadFile(filepath.Join(home, "/.candled/credentials"))
+	if err != nil {
+		time.Sleep(time.Second)
+		return ""
+	}
+	return string(bytes.TrimSpace(b))
+}
+
+func mustWriteToken(dotPath, token string) {
+	if token == "" {
+		log.Panic("expected a valid token but got empty string")
+	}
+	err := ioutil.WriteFile(path.Join(dotPath, "credentials"), []byte(token), os.ModePerm)
+	if err != nil {
+		log.Panic(err)
+	}
+}
+
+func mustNewInfluxC(addr, token string, opts ...influxdb.Option) *influxdb.Client {
+	influxC, err := influxdb.New(addr, token, opts...)
+	if err != nil {
+		log.Panic(err)
+	}
+	return influxC
+}
+
+func envWithDefault(key, defaultValue string) string {
+	if val := os.Getenv(key); val != "" {
+		return val
+	}
+	return defaultValue
 }

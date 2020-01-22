@@ -1,0 +1,26 @@
+version: '3'
+services:
+  candled:
+    container_name: candled
+    build:
+      context: .
+      dockerfile: ./cmd/candled/Dockerfile
+    environment:
+      INFLUX_ADDR: http://influxdb:9999
+      INFLUX_BUCKET: candles
+      INFLUX_ORG: candle
+      INFLUX_USER: admin
+      INFLUX_PASSWORD: password
+    restart: always
+    depends_on:
+      - influxdb
+    volumes:
+      - $HOME/.candled:/root/.candled
+  influxdb:
+    image: quay.io/influxdb/influxdb:2.0.0-beta
+    container_name: influxdb
+    ports:
+      - "9119:9999"
+    volumes:
+      - $HOME/.candled:/root/.influxdbv2
+
