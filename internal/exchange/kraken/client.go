@@ -173,7 +173,7 @@ func slcIfaceToEntry(cache map[string]struct {
 	ex := exchange.PairEntryMsg{
 		Pair: exchange.NewPair(symbol[:3], symbol[4:]),
 		Entry: exchange.Entry{
-			Time:   int64((time.Duration(floatIface(entry[0])) * time.Second).Round(time.Minute)),
+			Time:   int64((time.Duration(floatIface(entry[0])) * time.Second).Truncate(time.Minute)),
 			Open:   floatIface(entry[2]),
 			High:   floatIface(entry[3]),
 			Low:    floatIface(entry[4]),
