@@ -7,14 +7,18 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
+	"github.com/gobwas/ws"
+	"github.com/gobwas/ws/wsutil"
 	"github.com/jsteenb2/candle/internal/exchange"
 	"github.com/jsteenb2/candle/pkg/httpc"
 )
 
 type Client struct {
 	httpClient *httpc.Client
+	wsURL      string
 }
 
 var _ exchange.Exchange = (*Client)(nil)
@@ -25,7 +29,10 @@ func New() (*Client, error) {
 		log.Panic(err)
 	}
 
-	return &Client{httpClient: client}, nil
+	return &Client{
+		httpClient: client,
+		wsURL:      "wss://ws.kraken.com/v2/marketdata",
+	}, nil
 }
 
 func (c *Client) Exchange() string {
@@ -34,6 +41,88 @@ func (c *Client) Exchange() string {
 
 func (c *Client) ValidPair(_ exchange.Pair) bool {
 	return true
+}
+
+func (c *Client) Subscribe(ctx context.Context, pairs ...exchange.Pair) (<-chan exchange.PairEntryMsg, error) {
+	conn, _, _, err := ws.Dial(ctx, c.wsURL)
+	if err != nil {
+		return nil, err
+	}
+
+	out := make(chan exchange.PairEntryMsg)
+	go func(symbols []string) {
+		defer close(out)
+		defer conn.Close()
+
+		type sub struct {
+			Name     string `json:"name"`
+			Interval int    `json:"interval"` // in minutes
+		}
+
+		subscription := struct {
+			Event        string   `json:"event"`
+			Pairs        []string `json:"pair"`
+			Subscription sub      `json:"subscription"`
+		}{
+			Event: "subscribe",
+			Pairs: symbols,
+			Subscription: sub{
+				Name:     "ohlc",
+				Interval: 1,
+			},
+		}
+		b, err := json.Marshal(subscription)
+		if err != nil {
+			log.Println(err)
+			return
+		}
+
+		if err := wsutil.WriteClientText(conn, b); err != nil {
+			log.Println("write client text: ", err)
+			return
+		}
+
+		tracker := make(map[string]struct {
+			endTime time.Time
+			msg     exchange.PairEntryMsg
+		})
+		for {
+			b, _, err := wsutil.ReadServerData(conn)
+			if err != nil {
+				log.Println("read server data:", err)
+				return
+			}
+
+			var resp interface{}
+			if err := json.Unmarshal(b, &resp); err != nil {
+				log.Println("json unmarshal: ", err)
+				continue
+			}
+
+			switch p := resp.(type) {
+			case map[string]interface{}:
+				if event, ok := p["event"].(string); !ok || event == "heartbeat" {
+					// do something?
+				}
+			case []interface{}:
+				e, ok := slcIfaceToEntry(tracker, p)
+				if !ok {
+					continue
+				}
+
+				select {
+				case <-ctx.Done():
+					return
+				case out <- e:
+				}
+			default:
+				log.Printf("unmatched type: %+v", p)
+				continue
+			}
+		}
+	}(pairsToSymbols(pairs))
+
+	return out, nil
 }
 
 func (c *Client) Historical(ctx context.Context, pair exchange.Pair, start, _ time.Time) ([]exchange.Entry, error) {
@@ -54,6 +143,60 @@ func (c *Client) Historical(ctx context.Context, pair exchange.Pair, start, _ ti
 		return nil, err
 	}
 	return deets.Entries(), nil
+}
+
+func slcIfaceToEntry(cache map[string]struct {
+	endTime time.Time
+	msg     exchange.PairEntryMsg
+}, slc []interface{}) (exchange.PairEntryMsg, bool) {
+	if len(slc) < 4 {
+		return exchange.PairEntryMsg{}, false
+	}
+	symbol, ok := slc[3].(string)
+	if !ok {
+		return exchange.PairEntryMsg{}, false
+	}
+	if !strings.Contains(symbol, "/") {
+		return exchange.PairEntryMsg{}, false
+	}
+
+	entry, ok := slc[1].([]interface{})
+	if !ok || len(entry) != 9 {
+		return exchange.PairEntryMsg{}, false
+	}
+
+	existing, ok := cache[symbol]
+	endTime := time.Unix(0, int64(floatIface(entry[1]))*int64(time.Second))
+
+	ex := exchange.PairEntryMsg{
+		Pair: exchange.NewPair(symbol[:3], symbol[4:]),
+		Entry: exchange.Entry{
+			Time:   int64((time.Duration(floatIface(entry[0])) * time.Second).Round(time.Minute)),
+			Open:   floatIface(entry[2]),
+			High:   floatIface(entry[3]),
+			Low:    floatIface(entry[4]),
+			Close:  floatIface(entry[5]),
+			Vwap:   floatIface(entry[6]),
+			Volume: floatIface(entry[7]),
+			Count:  intIface(entry[8]),
+		},
+	}
+	cache[symbol] = struct {
+		endTime time.Time
+		msg     exchange.PairEntryMsg
+	}{
+		endTime: endTime,
+		msg:     ex,
+	}
+	return existing.msg, ok && existing.endTime.Before(endTime)
+}
+
+func pairsToSymbols(pairs []exchange.Pair) []string {
+	out := make([]string, 0, len(pairs))
+	for _, p := range pairs {
+		out = append(out, p.Market()+"/"+p.Currency())
+	}
+	return out
 }
 
 type resulter interface {

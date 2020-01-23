@@ -1,4 +1,4 @@
-package gemini_test
+package kraken_test
 
 import (
 	"context"
@@ -7,12 +7,12 @@ import (
 	"time"
 
 	"github.com/jsteenb2/candle/internal/exchange"
-	"github.com/jsteenb2/candle/internal/exchange/gemini"
+	"github.com/jsteenb2/candle/internal/exchange/kraken"
 	"github.com/stretchr/testify/require"
 )
 
 func TestClient(t *testing.T) {
-	c, err := gemini.New()
+	c, err := kraken.New()
 	require.NoError(t, err)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)

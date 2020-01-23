@@ -22,6 +22,7 @@ import (
 	"github.com/jsteenb2/candle/internal/exchange/binance"
 	"github.com/jsteenb2/candle/internal/exchange/coinbase"
 	"github.com/jsteenb2/candle/internal/exchange/gemini"
+	"github.com/jsteenb2/candle/internal/exchange/kraken"
 )
 
 func main() {
@@ -130,10 +131,16 @@ func main() {
 		log.Panic(err)
 	}
 
+	krakenC, err := kraken.New()
+	if err != nil {
+		log.Panic(err)
+	}
+
 	exchanges := []exchange.Exchange{
 		binanceC,
 		coinbaseC,
 		geminiC,
+		krakenC,
 	}
 
 	exchangeRunner := exchange.Runner{
