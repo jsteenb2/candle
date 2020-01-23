@@ -47,7 +47,7 @@ func (c *Client) Exchange() string {
 }
 
 func (c *Client) ValidPair(pair exchange.Pair) bool {
-	if exchange.Currency(pair.Currency()) == exchange.EUR {
+	if pair.IsCurrency(exchange.USDT, exchange.EUR) {
 		return false
 	}
 	if exchange.Market(pair.Market()) == exchange.Bitcoin {
@@ -193,6 +193,7 @@ func (c *Client) initSymbols() error {
 	err := c.httpClient.
 		Get("/v1/symbols").
 		DecodeJSON(&symbols).
+		StatusFn(httpc.StatusIn(200)).
 		Do(ctx)
 	if err != nil {
 		return err

@@ -12,7 +12,7 @@ type (
 
 const (
 	MarketUnknown   Market = ""
-	Bitcoin         Market = "XBT"
+	Bitcoin         Market = "BTC"
 	BitcoinCash     Market = "BCH"
 	Ethereum        Market = "ETH"
 	EthereumClassic Market = "ETC"
@@ -24,7 +24,21 @@ const (
 	CurrencyUnknown Currency = ""
 	USD             Currency = "USD"
 	EUR             Currency = "EUR"
+	USDT            Currency = "USDT"
 )
+
+var Pairs = func() []Pair {
+	markets := []Market{Bitcoin, BitcoinCash, Ethereum, EthereumClassic, Monero, Ripple}
+	currencies := []Currency{USD, EUR, USDT}
+
+	var out []Pair
+	for _, m := range markets {
+		for _, c := range currencies {
+			out = append(out, Pair{market: m, currency: c})
+		}
+	}
+	return out
+}
 
 type Pair struct {
 	market   Market
@@ -32,20 +46,19 @@ type Pair struct {
 }
 
 func NewPair(market, cur string) Pair {
-	market = strings.ToUpper(market)
-	if market == "BTC" {
-		market = string(Bitcoin)
-	}
-
-	cur = strings.ToUpper(cur)
-	if cur == "USDT" {
-		cur = "USD"
-	}
-
 	return Pair{
 		market:   Market(market),
 		currency: Currency(cur),
 	}
+}
+
+func (p Pair) IsCurrency(c Currency, rest ...Currency) bool {
+	for _, cur := range append(rest, c) {
+		if cur == p.currency {
+			return true
+		}
+	}
+	return false
 }
 
 func (p Pair) Market() string {
@@ -71,12 +84,12 @@ func (p Pair) OK() error {
 }
 
 var (
-	XBTUSD = Pair{
+	BTCUSD = Pair{
 		market:   Bitcoin,
 		currency: USD,
 	}
 
-	XBTEUR = Pair{
+	BTCEUR = Pair{
 		market:   Bitcoin,
 		currency: EUR,
 	}

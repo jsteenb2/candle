@@ -260,16 +260,7 @@ func (c *Client) initSymbols() error {
 }
 
 func symbol(p exchange.Pair) string {
-	market := p.Market()
-	if exchange.Market(p.Market()) == exchange.Bitcoin {
-		market = "BTC"
-	}
-
-	cur := p.Currency()
-	if exchange.Currency(cur) == exchange.USD {
-		cur = "USDT"
-	}
-	return market + cur
+	return p.Market() + p.Currency()
 }
 
 func timestamp(t time.Time) string {
