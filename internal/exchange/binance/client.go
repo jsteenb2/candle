@@ -7,9 +7,15 @@ import (
 	"io/ioutil"
 	"log"
 	"net/http"
+	"net/url"
+	"path"
 	"strconv"
+	"strings"
 	"time"
 
+	"github.com/gobwas/ws/wsutil"
+
+	"github.com/gobwas/ws"
 	"github.com/jsteenb2/candle/internal/exchange"
 	"github.com/jsteenb2/candle/pkg/httpc"
 	"golang.org/x/time/rate"
@@ -19,6 +25,7 @@ type Client struct {
 	httpClient *httpc.Client
 	limiter    *rate.Limiter
 
+	wsURL        url.URL
 	knownSymbols map[string]bool
 }
 
@@ -32,8 +39,14 @@ func New() (*Client, error) {
 	limiter := rate.NewLimiter(5, 5)
 	limiter.SetLimit(limit)
 
+	u, err := url.Parse("wss://stream.binance.com:9443")
+	if err != nil {
+		return nil, err
+	}
+
 	c := &Client{
 		httpClient: client,
+		wsURL:      *u,
 		limiter:    limiter,
 	}
 	if err := c.initSymbols(); err != nil {
@@ -51,8 +64,102 @@ func (c *Client) ValidPair(pair exchange.Pair) bool {
 }
 
 func (c *Client) Subscribe(ctx context.Context, pairs ...exchange.Pair) (<-chan exchange.PairEntryMsg, error) {
+	u := c.wsURL
+	u.Path = path.Join(u.Path, "/stream")
+	var wsStreams []string
+	for _, p := range pairs {
+		sym := symbol(p)
+		if sym == "" {
+			continue
+		}
+		wsStreams = append(wsStreams, strings.ToLower(sym)+"@kline_1m")
+	}
+	u.RawQuery = "streams=" + strings.Join(wsStreams, "/")
+
+	conn, _, _, err := ws.Dial(ctx, u.String())
+	if err != nil {
+		return nil, err
+	}
+
 	stream := make(chan exchange.PairEntryMsg)
-	defer close(stream)
+	go func(params []string) {
+		defer close(stream)
+		defer conn.Close()
+
+		subscription := struct {
+			Method string   `json:"method"`
+			Params []string `json:"params"`
+			ID     int      `json:"id"`
+		}{
+			Method: "SUBSCRIBE",
+			Params: params,
+			ID:     9000,
+		}
+		b, err := json.Marshal(subscription)
+		if err != nil {
+			log.Println(err)
+			return
+		}
+
+		if err := wsutil.WriteClientText(conn, b); err != nil {
+			log.Println("write client:", err)
+			return
+		}
+
+		for {
+			b, _, err := wsutil.ReadServerData(conn)
+			if err != nil {
+				log.Println(err)
+				return
+			}
+
+			var update struct {
+				Stream string `json:"stream"`
+				Data   struct {
+					Event     string `json:"e"`
+					EventTime int    `json:"E"` // in seconds
+					Symbol    string `json:"s"`
+					Candle    struct {
+						CloseTime int         `json:"T"`
+						StartTime int         `json:"t"`
+						Open      interface{} `json:"o"`
+						Close     interface{} `json:"c"`
+						High      interface{} `json:"h"`
+						Low       interface{} `json:"l"`
+						Volume    interface{} `json:"v"`
+						Count     int         `json:"n"`
+						Closed    bool        `json:"x"`
+					} `json:"k"`
+				} `json:"data"`
+			}
+			if err := json.Unmarshal(b, &update); err != nil {
+				log.Println("json err: ", err)
+				continue
+			}
+
+			if !update.Data.Candle.Closed {
+				continue
+			}
+
+			symbol := update.Data.Symbol
+			can := update.Data.Candle
+			select {
+			case <-ctx.Done():
+				return
+			case stream <- exchange.PairEntryMsg{
+				Pair: exchange.NewPair(symbol[:3], symbol[3:]),
+				Entry: exchange.Entry{
+					Time:   int64(can.StartTime) * int64(time.Millisecond),
+					Count:  can.Count,
+					Open:   floatIface(can.Open),
+					Close:  floatIface(can.Close),
+					High:   floatIface(can.High),
+					Low:    floatIface(can.Low),
+					Volume: floatIface(can.Volume),
+				}}:
+			}
+		}
+	}(wsStreams)
 
 	return stream, nil
 }
