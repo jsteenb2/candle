@@ -29,13 +29,16 @@ func main() {
 	ballast := make([]byte, 10<<30)
 	var _ = ballast
 
-	addr := flag.String("addr", envWithDefault("INFLUX_ADDR", "http://localhost:9999"), "address for influxdb")
+	addr := flag.String("addr", envWithDefault("INFLUX_ADDR", "http://localhost:9999"), "address for influxdb; maps to env var INFLUX_ADDR")
 	token := flag.String("token", "", "token for influxdb")
-	bkt := flag.String("bucket", envWithDefault("INFLUX_BUCKET", "bucket1"), "influxdb bucket target")
-	user := flag.String("user", envWithDefault("INFLUX_USER", ""), "influxdb bucket target")
-	password := flag.String("password", envWithDefault("INFLUX_PASSWORD", ""), "influxdb bucket target")
-	org := flag.String("org", envWithDefault("INFLUX_ORG", "rg"), "influxdb org target")
+	bkt := flag.String("bucket", envWithDefault("INFLUX_BUCKET", "bucket1"), "influxdb bucket target; maps to env var INFLUX_BUCKET")
+	user := flag.String("user", envWithDefault("INFLUX_USER", ""), "influxdb user; maps to env var INFLUX_USER")
+	password := flag.String("password", envWithDefault("INFLUX_PASSWORD", ""), "influxdb password; maps to env var INFLUX_PASSWORD")
+	org := flag.String("org", envWithDefault("INFLUX_ORG", "rg"), "influxdb org target; maps to env var INFLUX_ORG")
 	dotPath := flag.String("dotpath", os.ExpandEnv("$HOME/.candled"), "path to boltdb")
+	disableLive := flag.Bool("disable-live", os.Getenv("CANDLE_DISABLE_LIVE") == "true", "disable the live feed;")
+	disableHistorical := flag.Bool("disable-historical", os.Getenv("CANDLE_DISABLE_HISTORICAL") == "true", "disable the historical feed;")
+	historicalDuration := flag.Duration("historical-duration", envWithDefaultDur("CANDLE_HISTORICAL_DURATION", 30*24*time.Hour), "number of days to back fill, starting from now. ex: 24h translates to historical for most recent day")
 	flag.Parse()
 
 	if *addr == "" {
@@ -168,22 +171,27 @@ func main() {
 	defer cancel()
 
 	wg := new(sync.WaitGroup)
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		if err := exchangeRunner.Live(ctx, pairs); err != nil {
-			log.Println("live err: ", err)
-		}
-	}()
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		err := exchangeRunner.BackFill(ctx, pairs, time.Now().Add(-180*24*time.Hour))
-		if err != nil {
-			log.Println("backfill err: ", err)
-		}
-	}()
+	if !*disableLive {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := exchangeRunner.Live(ctx, pairs); err != nil {
+				log.Println("live err: ", err)
+			}
+		}()
+	}
+
+	if !*disableHistorical {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			err := exchangeRunner.BackFill(ctx, pairs, time.Now().Add(-*historicalDuration))
+			if err != nil {
+				log.Println("backfill err: ", err)
+			}
+		}()
+	}
 	done := make(chan os.Signal, 2)
 	signal.Notify(done, os.Interrupt, os.Kill)
 
@@ -231,6 +239,17 @@ func mustNewInfluxC(addr, token string, opts ...influxdb.Option) *influxdb.Clien
 func envWithDefault(key, defaultValue string) string {
 	if val := os.Getenv(key); val != "" {
 		return val
+	}
+	return defaultValue
+}
+
+func envWithDefaultDur(key string, defaultValue time.Duration) time.Duration {
+	if val := os.Getenv(key); val != "" {
+		d, err := time.ParseDuration(val)
+		if err != nil {
+			log.Panic("invalid duration provided: " + err.Error())
+		}
+		return d
 	}
 	return defaultValue
 }

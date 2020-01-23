@@ -106,13 +106,18 @@ func (r *Runner) Live(ctx context.Context, pairs []Pair) error {
 		wg.Add(1)
 		go func(exchange string, st <-chan PairEntryMsg) {
 			defer wg.Done()
+
+			var counter int64
 			for m := range st {
+				counter++
 				metricStream <- Metric{
 					Pair:     m.Pair,
 					Exchange: exchange,
 					Metric:   m.Entry.toInfluxMetric(exchange, m.Pair),
 				}
 			}
+
+			log.Printf("%s live stream finished: num_metrics=%d", exchange, counter)
 		}(ex.Exchange(), stream)
 	}
 	go func() {
@@ -141,13 +146,16 @@ func (r *Runner) BackFill(ctx context.Context, pairs []Pair, start time.Time) er
 			stream := r.runHistorical(ctx, ex, pair, start)
 
 			wg.Add(1)
-			go func(st <-chan Metrics) {
+			go func(exchange string, p Pair, st <-chan Metrics) {
 				defer wg.Done()
 
+				var counter int64
 				for msg := range st {
+					counter++
 					metricsStream <- msg
 				}
-			}(stream)
+				log.Printf("%s (%s|%s) backfill complete: num_metrics=%d", exchange, p.Market(), p.Currency(), counter)
+			}(ex.Exchange(), pair, stream)
 		}
 	}
 

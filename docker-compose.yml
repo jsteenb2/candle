@@ -6,6 +6,9 @@ services:
       context: .
       dockerfile: ./cmd/candled/Dockerfile
     environment:
+      CANDLE_DISABLE_HISTORICAL: "false"
+      CANDLE_DISABLE_LIVE: "false"
+      CANDLE_HISTORICAL_DURATION: 720h # == 30 days
       INFLUX_ADDR: http://influxdb:9999
       INFLUX_BUCKET: candles
       INFLUX_ORG: candle
