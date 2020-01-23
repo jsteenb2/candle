@@ -39,8 +39,8 @@ func (c *Client) Exchange() string {
 	return "kraken"
 }
 
-func (c *Client) ValidPair(_ exchange.Pair) bool {
-	return true
+func (c *Client) ValidPair(pair exchange.Pair) bool {
+	return !pair.IsCurrency(exchange.USDT)
 }
 
 // Subscribe grabs live data from the exchange.
@@ -209,9 +209,9 @@ type resulter interface {
 
 func convertPair(p exchange.Pair) resulter {
 	switch p {
-	case exchange.XBTUSD:
+	case exchange.BTCUSD:
 		return new(xbtusdMark)
-	case exchange.XBTEUR:
+	case exchange.BTCEUR:
 		return new(xbteurMark)
 	case exchange.BCHUSD:
 		return new(bchusdMark)

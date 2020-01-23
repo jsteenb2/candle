@@ -48,7 +48,7 @@ func (c *Client) Exchange() string {
 }
 
 func (c *Client) ValidPair(pair exchange.Pair) bool {
-	return exchange.Market(pair.Market()) != exchange.Monero
+	return !pair.IsCurrency(exchange.USDT) && exchange.Market(pair.Market()) != exchange.Monero
 }
 
 func (c *Client) Subscribe(ctx context.Context, pairs ...exchange.Pair) (<-chan exchange.PairEntryMsg, error) {

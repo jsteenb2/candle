@@ -18,7 +18,7 @@ func TestClient(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 
-	msgStream, err := c.Subscribe(ctx, exchange.XBTUSD, exchange.ETHUSD)
+	msgStream, err := c.Subscribe(ctx, exchange.BTCUSD, exchange.ETHUSD)
 	require.NoError(t, err)
 
 	num := 0

@@ -98,7 +98,14 @@ func (r *Runner) Live(ctx context.Context, pairs []Pair) error {
 
 	wg := new(sync.WaitGroup)
 	for _, ex := range r.Exchanges {
-		stream, err := ex.Subscribe(ctx, pairs...)
+		var validPairs []Pair
+		for _, p := range pairs {
+			if ex.ValidPair(p) {
+				validPairs = append(validPairs, p)
+			}
+		}
+
+		stream, err := ex.Subscribe(ctx, validPairs...)
 		if err != nil {
 			log.Printf("%s subscribe err: %s", ex.Exchange(), err)
 			continue

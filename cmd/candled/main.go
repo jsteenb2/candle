@@ -119,31 +119,44 @@ func main() {
 		iw = exchange.NewInfluxWriter(mustNewInfluxC(*addr, res.Auth.Token, influxOpts...), *bkt, *org)
 	}
 
-	binanceC, err := binance.New()
-	if err != nil {
-		log.Panic(err)
+	constructors := []struct {
+		name string
+		fn   func() (exchange.Exchange, error)
+	}{
+		{
+			name: "binance",
+			fn: func() (exchange.Exchange, error) {
+				return binance.New()
+			},
+		},
+		{
+			name: "coinbase",
+			fn: func() (exchange.Exchange, error) {
+				return coinbase.New()
+			},
+		},
+		{
+			name: "gemini",
+			fn: func() (exchange.Exchange, error) {
+				return gemini.New()
+			},
+		},
+		{
+			name: "kraken",
+			fn: func() (exchange.Exchange, error) {
+				return kraken.New()
+			},
+		},
 	}
 
-	coinbaseC, err := coinbase.New()
-	if err != nil {
-		log.Panic(err)
-	}
-
-	geminiC, err := gemini.New()
-	if err != nil {
-		log.Panic(err)
-	}
-
-	krakenC, err := kraken.New()
-	if err != nil {
-		log.Panic(err)
-	}
-
-	exchanges := []exchange.Exchange{
-		binanceC,
-		coinbaseC,
-		geminiC,
-		krakenC,
+	var exchanges []exchange.Exchange
+	for _, constructor := range constructors {
+		ex, err := constructor.fn()
+		if err != nil {
+			log.Printf("%s exchange: %s", constructor.name, err)
+			continue
+		}
+		exchanges = append(exchanges, ex)
 	}
 
 	exchangeRunner := exchange.Runner{
@@ -152,45 +165,31 @@ func main() {
 		Exchanges: exchanges,
 	}
 
-	pairs := []exchange.Pair{
-		exchange.XBTUSD,
-		exchange.XBTEUR,
-		exchange.BCHUSD,
-		exchange.BCHEUR,
-		exchange.ETHUSD,
-		exchange.ETHEUR,
-		exchange.ETCUSD,
-		exchange.ETCEUR,
-		exchange.XMRUSD,
-		exchange.XMREUR,
-		exchange.XRPUSD,
-		exchange.XRPEUR,
-	}
-
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	wg := new(sync.WaitGroup)
 
+	pairs := exchange.Pairs()
 	if !*disableLive {
 		wg.Add(1)
-		go func() {
+		go func(pairs []exchange.Pair) {
 			defer wg.Done()
 			if err := exchangeRunner.Live(ctx, pairs); err != nil {
 				log.Println("live err: ", err)
 			}
-		}()
+		}(pairs)
 	}
 
 	if !*disableHistorical {
 		wg.Add(1)
-		go func() {
+		go func(pairs []exchange.Pair) {
 			defer wg.Done()
 			err := exchangeRunner.BackFill(ctx, pairs, time.Now().Add(-*historicalDuration))
 			if err != nil {
 				log.Println("backfill err: ", err)
 			}
-		}()
+		}(pairs)
 	}
 	done := make(chan os.Signal, 2)
 	signal.Notify(done, os.Interrupt, os.Kill)
