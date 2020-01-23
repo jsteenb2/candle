@@ -59,6 +59,88 @@ func (w *InfluxClient) Write(ctx context.Context, metrics []influxdb.Metric) err
 	return err
 }
 
+type BatchWriter struct {
+	name     string
+	maxSize  int
+	interval time.Duration
+
+	influxC InfluxC
+
+	metricsStream chan influxdb.Metric
+	sem           chan struct{}
+}
+
+func NewBatchWriter(ctx context.Context, name string, influxC InfluxC, maxSize, numWriters int, flushInterval time.Duration) *BatchWriter {
+	bw := &BatchWriter{
+		name:          name,
+		influxC:       influxC,
+		maxSize:       maxSize,
+		metricsStream: make(chan influxdb.Metric),
+		sem:           make(chan struct{}, numWriters),
+		interval:      flushInterval,
+	}
+	go bw.Run(ctx)
+	return bw
+}
+
+func (bw *BatchWriter) Write(ctx context.Context, metrics ...influxdb.Metric) {
+	for _, m := range metrics {
+		select {
+		case <-ctx.Done():
+		case bw.metricsStream <- m:
+		}
+	}
+}
+
+func (bw *BatchWriter) Run(ctx context.Context) {
+	write := func(metrics []influxdb.Metric) {
+		if len(metrics) == 0 {
+			return
+		}
+
+		batch := make([]influxdb.Metric, len(metrics))
+		copy(batch, metrics)
+
+		bw.sem <- struct{}{}
+		go func() {
+			defer func() { <-bw.sem }()
+
+			start := time.Now()
+			if err := bw.influxC.Write(ctx, batch); err != nil {
+				log.Printf("%s failed to write: %s", bw.name, err)
+				return
+			}
+			log.Printf("%s write successful: num_metrics=%d took=%s", bw.name, len(batch), time.Since(start))
+		}()
+	}
+
+	timer := time.NewTimer(bw.interval)
+
+	metrics := make([]influxdb.Metric, 0, 1e3)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-timer.C:
+			write(metrics)
+			metrics = metrics[:0]
+			timer.Reset(bw.interval)
+		case m := <-bw.metricsStream:
+			metrics = append(metrics, m)
+			if len(metrics) < bw.maxSize {
+				continue
+			}
+			write(metrics)
+			metrics = metrics[:0]
+			timer.Reset(bw.interval)
+		}
+	}
+}
+
+func (w *InfluxClient) BatchWriter(ctx context.Context, name string, maxSize, numWriters int, flushInterval time.Duration) *BatchWriter {
+	return NewBatchWriter(ctx, name, w, maxSize, numWriters, flushInterval)
+}
+
 type FindOpts struct {
 	Exchange  string
 	Pair      Pair

@@ -67,6 +67,7 @@ type (
 
 	InfluxC interface {
 		FindWindow(ctx context.Context, opt FindOpts) ([]Window, error)
+		BatchWriter(ctx context.Context, name string, maxSize, numWriters int, flushInterval time.Duration) *BatchWriter
 		Write(ctx context.Context, metrics []influxdb.Metric) error
 	}
 )
@@ -119,13 +120,9 @@ func (r *Runner) Live(ctx context.Context, pairs []Pair) error {
 		close(metricStream)
 	}()
 
+	bw := r.InfluxC.BatchWriter(ctx, "live", 50, 5, 250*time.Millisecond)
 	for m := range metricStream {
-		metrics := []influxdb.Metric{m.Metric}
-		if err := r.InfluxC.Write(ctx, metrics); err != nil {
-			log.Printf("failed live write to influxdb for market=%s cur=%s: err=%s", m.Pair.Market(), m.Pair.Currency(), err)
-			continue
-		}
-		log.Printf("live write successful: exchange=%s market=%s cur=%s time=%s", m.Exchange, m.Pair.Market(), m.Pair.Currency(), m.Metric.Time().Format(time.Stamp))
+		bw.Write(ctx, m.Metric)
 	}
 
 	return nil
@@ -159,20 +156,9 @@ func (r *Runner) BackFill(ctx context.Context, pairs []Pair, start time.Time) er
 		close(metricsStream)
 	}()
 
+	bw := r.InfluxC.BatchWriter(ctx, "backfill", 2500, 3, time.Second)
 	for m := range metricsStream {
-		if err := r.InfluxC.Write(context.Background(), m.Metrics); err != nil {
-			log.Printf("failed backfill write to influxdb for market=%s cur=%s: err=%s", m.Pair.Market(), m.Pair.Currency(), err)
-			continue
-		}
-		log.Printf("backfill successful: exchange=%s market=%s cur=%s batch_size=%d start=%q stop=%q spans=%s",
-			m.Exchange,
-			m.Pair.Market(),
-			m.Pair.Currency(),
-			len(m.Metrics),
-			m.Start.Format(time.Stamp),
-			m.End.Format(time.Stamp),
-			time.Duration(m.End.UnixNano()-m.Start.UnixNano()),
-		)
+		bw.Write(ctx, m.Metrics...)
 	}
 
 	return nil
