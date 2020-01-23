@@ -58,6 +58,8 @@ func (c *Client) ValidPair(pair exchange.Pair) bool {
 	return c.symbols[pairSymb]
 }
 
+// Subscribe grabs live data from the exchange.
+//	docs: https://docs.gemini.com/websocket-api/#market-data
 func (c *Client) Subscribe(ctx context.Context, pairs ...exchange.Pair) (<-chan exchange.PairEntryMsg, error) {
 	conn, _, _, err := ws.Dial(ctx, c.wsURL)
 	if err != nil {

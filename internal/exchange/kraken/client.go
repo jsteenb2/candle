@@ -43,6 +43,8 @@ func (c *Client) ValidPair(_ exchange.Pair) bool {
 	return true
 }
 
+// Subscribe grabs live data from the exchange.
+//	docs: https://docs.kraken.com/websockets/
 func (c *Client) Subscribe(ctx context.Context, pairs ...exchange.Pair) (<-chan exchange.PairEntryMsg, error) {
 	conn, _, _, err := ws.Dial(ctx, c.wsURL)
 	if err != nil {

@@ -63,6 +63,8 @@ func (c *Client) ValidPair(pair exchange.Pair) bool {
 	return c.knownSymbols[symbol(pair)]
 }
 
+// Subscribe grabs live data from the exchange.
+//	docs: https://github.com/binance-exchange/binance-official-api-docs/blob/master/web-socket-streams.md
 func (c *Client) Subscribe(ctx context.Context, pairs ...exchange.Pair) (<-chan exchange.PairEntryMsg, error) {
 	u := c.wsURL
 	u.Path = path.Join(u.Path, "/stream")
