@@ -117,6 +117,9 @@ func main() {
 		}
 		mustWriteToken(*dotPath, res.Auth.Token)
 		iw = exchange.NewInfluxWriter(mustNewInfluxC(*addr, res.Auth.Token, influxOpts...), *bkt, *org)
+		if err := iw.Ping(context.Background(), 15); err != nil {
+			log.Panic(fmt.Errorf("failed to ping influxdb: %w", err))
+		}
 	}
 
 	constructors := []struct {
