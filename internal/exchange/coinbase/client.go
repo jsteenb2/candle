@@ -58,14 +58,6 @@ func (c *Client) Subscribe(ctx context.Context, pairs ...exchange.Pair) (<-chan 
 	return out, nil
 }
 
-func pairsToProductIDs(pairs []exchange.Pair) []string {
-	var out []string
-	for _, p := range pairs {
-		out = append(out, productID(p))
-	}
-	return out
-}
-
 func (c *Client) Historical(ctx context.Context, pair exchange.Pair, start, end time.Time) ([]exchange.Entry, error) {
 	if err := c.limiter.Wait(ctx); err != nil {
 		return nil, err
